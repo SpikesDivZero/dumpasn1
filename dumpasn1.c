@@ -7,8 +7,8 @@
    Manger, Igor Perminov, and several other people whose names I've
    misplaced.
 
-   Available from http://www.cs.auckland.ac.nz/~pgut001/dumpasn1.c. Last
-   updated 22 October 2019 (version 20191022, if you prefer it that way,
+   Available from https://www.cs.auckland.ac.nz/~pgut001/dumpasn1.c. Last
+   updated 22 April 2021 (version 20210422, if you prefer it that way,
    see also UPDATE_STRING below).  To build under Windows, use 
    'cl /MD dumpasn1.c'.  To build on OS390 or z/OS, use 
    '/bin/c89 -D OS390 -o dumpasn1 dumpasn1.c'.
@@ -18,27 +18,27 @@
    normal coding style, and should only be used as a debugging/diagnostic
    tool and not in a production environment (I'm not sure how you'd use
    it in production anyway, but felt I should point that out).  cryptlib,
-   http://www.cs.auckland.ac.nz/~pgut001/cryptlib/, does a much better job of
-   checking ASN.1 than this does, since dumpasn1 is a display program written
-   to accept the widest possible range of input and not a compliance checker.
-   In other words it will bend over backwards to even accept invalid data,
-   since a common use for it is to try and locate encoding problems that lead
-   to invalid encoded data.  While it will warn about some types of common
-   errors, the fact that dumpasn1 will display an ASN.1 data item doesn't mean
-   that the item is valid.
+   https://www.cs.auckland.ac.nz/~pgut001/cryptlib/, does a much better job 
+   of checking ASN.1 than this does, since dumpasn1 is a display program 
+   written to accept the widest possible range of input and not a compliance 
+   checker.  In other words it will bend over backwards to even accept 
+   invalid data, since a common use for it is to try and locate encoding 
+   problems that lead to invalid encoded data.  While it will warn about 
+   some types of common errors, the fact that dumpasn1 will display an ASN.1 
+   data item doesn't mean that the item is valid.
 
    dumpasn1 requires a config file dumpasn1.cfg to be present in the same
    location as the program itself or in a standard directory where binaries
    live (it will run without it but will display a warning message, you can
    configure the path either by hardcoding it in or using an environment
    variable as explained further down).  The config file is available from
-   http://www.cs.auckland.ac.nz/~pgut001/dumpasn1.cfg.
+   https://www.cs.auckland.ac.nz/~pgut001/dumpasn1.cfg.
 
    This code assumes that the input data is binary, having come from a MIME-
    aware mailer or been piped through a decoding utility if the original
    format used base64 encoding.  If you need to decode it, it's recommended
-   that you use a utility like uudeview, which will strip virtually any kind
-   of encoding (MIME, PEM, PGP, whatever) to recover the binary original.
+   that you use a utility like uudeview, which will strip most kinds of 
+   encoding (MIME, PEM, PGP, whatever) to recover the binary original.
 
    You can use this code in whatever way you want, as long as you don't try
    to claim you wrote it.
@@ -69,7 +69,8 @@
 
 /* The update string, printed as part of the help screen */
 
-#define UPDATE_STRING	"22 October 2019"
+#define UPDATE_YEAR		"2021"
+#define UPDATE_STRING	"22 April 2021"
 
 /* Useful defines */
 
@@ -281,6 +282,7 @@ static int doDumpHeader = FALSE;	/* Dump tag+len in hex (level = 0, 1, 2) */
 static int extraOIDinfo = FALSE;	/* Print extra information about OIDs */
 static int doHexValues = FALSE;		/* Display size, offset in hex not dec.*/
 static int useStdin = FALSE;		/* Take input from stdin */
+static int noWarnStdin = FALSE;		/* Don't warn about stdin disabling display options */
 static int zeroLengthAllowed = FALSE;/* Zero-length items allowed */
 static int dumpText = FALSE;		/* Dump text alongside hex data */
 static int printAllData = FALSE;	/* Whether to print all data in long blocks */
@@ -1301,6 +1303,23 @@ static void complainEOF( const int level, const int missingBytes )
 				"Unexpected EOF, 1 byte missing", missingBytes, level );
 	}
 
+/* Warn about a (non-error) issue in the ASN.1 object */
+
+static void warn( const char *message, const int messageParam,
+				  const int level )
+	{
+	if( level < maxNestLevel )
+		{
+		if( !doPure )
+			fprintf( output, "%s", INDENT_STRING );
+		doIndent( level + 1 );
+		}
+	fputs( "Warning: ", output );
+	fprintf( output, message, messageParam );
+	fputs( ".\n", output );
+	noWarnings++;
+	}
+
 /* Adjust the nesting-level value to make sure that we don't go off the edge
    of the screen via doIndent() when we're displaying a text or hex dump of
    data */
@@ -1324,24 +1343,16 @@ static int adjustLevel( const int level, const int maxLevel )
 #if defined( __WIN32__ ) || defined( __UNIX__ ) || defined( __OS390__ )
 
 /* Try and display to display a Unicode character.  This is pretty hit and
-   miss, and if it fails nothing is displayed.  To try and detect this we
-   use wcstombs() to see if anything can be displayed, if it can't we drop
-   back to trying to display the data as non-Unicode */
-
-static int displayUnicode( const wchar_t wCh, const int level )
-	{
-	char outBuf[ 8 ];
-	int outLen;
-
-	/* Check whether we can display this character */
-	outLen = wcstombs( outBuf, &wCh, 8 );
-	if( outLen < 1 )
-		{
-		/* Tell the caller that this can't be displayed as Unicode */
-		return( FALSE );
-		}
+   miss, and if it fails nothing is displayed.  Under Windows it just works,
+   for anything else to try and detect this we use wcstombs() to see if 
+   anything can be displayed, if it can't we drop back to trying to display 
+   the data as non-Unicode */
 
 #if defined( __WIN32__ )
+
+static int displayUnicode( const wchar_t *wChBuf, const int level )
+	{
+	/* Under Windows fputwc() takes care of things */
 	if( level < maxNestLevel )
 		{
 		int oldmode;
@@ -1353,42 +1364,78 @@ static int displayUnicode( const wchar_t wCh, const int level )
 		   for Mars and Jupiter) */
 		fflush( output );
 		oldmode = _setmode( fileno( output ), _O_U16TEXT );
-		fputwc( wCh, output );
+		fputwc( wChBuf[ 0 ], output );
 		_setmode( fileno( output ), oldmode );
 		}
-#elif defined( __UNIX__ ) && !( defined( __MACH__ ) || defined( __OpenBSD__ ) )
-	/* Unix environments are even more broken than Win32, like Win32 the
-	   output differentiates between char and widechar output, but there's
-	   no easy way to deal with this.  In theory fwide() can set it, but
-	   it's a one-way function, once we've set it a particular way we can't
-	   go back (exactly what level of braindamage it takes to have an
-	   implementation function like this is a mystery).  Other sources
-	   suggest using setlocale() tricks, printf() with "%lc" or "%ls" as the
-	   format specifier, and others, but none of these seem to work properly
-	   either */
+	return( TRUE );
+	}
+#else
+
+static int displayUnicode( const wchar_t *wChBuf, const int level )
+	{
+	char outBuf[ 8 ];
+	int outLen;
+
+	/* Check whether we can display this character.  On Unix systems this 
+	   always fails (see below), so in order to test any of the subsequent
+	   output options it's necessary to comment the following lines out */
+#if 0
+	outLen = wctomb( outBuf, wChBuf[ 0 ] );
+#else
+	outLen = wcstombs( outBuf, wChBuf, 8 );
+#endif /* 0 */
+	if( outLen < 1 )
+		{
+		/* Tell the caller that this can't be displayed as Unicode */
+		return( FALSE );
+		}
+#if defined( __UNIX__ ) && !( defined( __MACH__ ) || defined( __OpenBSD__ ) )
+	/* Unix environments are completely broken for Unicode, like Win32 the
+	   output differentiates between char and widechar output but there's
+	   no easy way to deal with this.  In theory fwide() can set it but it's
+	   a one-way function, once we've set it a particular way we can't go 
+	   back.  Exactly what level of braindamage it takes to have an
+	   implementation function like this is a mystery, but the description
+	   of the braindamage is in the section "Narrow and wide orientation" of
+	   e.g. https://en.cppreference.com/w/c/io/FILE:
+
+		A newly opened stream has no orientation. The first call to fwide or 
+		to any I/O function establishes the orientation: a wide I/O function 
+		makes the stream wide-oriented; a narrow I/O function makes the 
+		stream narrow-oriented.  Once set, the orientation can be changed 
+		with only freopen.  Narrow I/O functions cannot be called on a wide-
+		oriented stream; wide I/O functions cannot be called on a narrow-
+		oriented stream. 
+		
+	   What this means is that as soon as we output anything, the stream is 
+	   locked into narrow mode and can never be used for wide characters.
+	   Windows OTOH handles this without any problems, so presumably this
+	   behaviour is someone's ideological preference.
+	   
+	   Other sources suggest using setlocale() tricks, printf() with "%lc" 
+	   or "%ls" as the format specifier, and others, but none of these seem 
+	   to work properly either */
 	if( level < maxNestLevel )
 		{
 #if 0
 		setlocale( LC_ALL, "" );
-		fputwc( wCh, output );
+		fputwc( wChBuf[ 0 ], output );
+#elif 0
+		fwprintf( output, L"%c", wChBuf[ 0 ] );
 #elif 1
 		/* This (and the "%ls" variant below) seem to be the least broken
 		   options */
-		fprintf( output, "%lc", wCh );
+		fprintf( output, "%lc", wChBuf[ 0 ] );
 #elif 0
-		wchar_t wChString[ 2 ];
-
-		wChString[ 0 ] = wCh;
-		wChString[ 1 ] = 0;
-		fprintf( output, "%ls", wChString );
+		fprintf( output, "%ls", wChBuf );
 #else
 		if( fwide( output, 1 ) > 0 )
 			{
-			fputwc( wCh, output );
+			fputwc( wChBuf[ 0 ], output );
 			fwide( output, -1 );
 			}
 		else
-			fputc( wCh, output );
+			fputc( wChBuf[ 0 ], output );
 #endif
 		}
 #else
@@ -1407,6 +1454,8 @@ static int displayUnicode( const wchar_t wCh, const int level )
 
 	return( TRUE );
 	}
+#endif /* Windows vs. Unix */
+
 #endif /* __WIN32__ || __UNIX__ || __OS390__ */
 
 /* Display an integer value */
@@ -1466,16 +1515,21 @@ static void printValue( FILE *inFile, const int valueLength,
 
 /* Dump data as a string of hex digits up to a maximum of 128 bytes */
 
+typedef enum {
+	DUMPHEX_NORMAL, DUMPHEX_INTEGER, DUMPHEX_BITSTRING 
+	} DUMPHEX_OPTION;
+
 static void dumpHex( FILE *inFile, long length, int level,
-					 const int isInteger )
+					 const DUMPHEX_OPTION option, const int param )
 	{
 	const int lineLength = ( dumpText ) ? 8 : 16;
 	const int displayHeaderLength = ( ( doPure ) ? 0 : INDENT_SIZE ) + 2;
 	BYTE intBuffer[ 2 ];
 	char printable[ 9 ];
 	long noBytes = length;
-	int warnPadding = FALSE, warnNegative = isInteger, singleLine = FALSE;
-	int displayLength = displayHeaderLength, prevCh = -1, i;
+	int singleLine = FALSE, warnPadding = FALSE; 
+	int warnNegative = ( option == DUMPHEX_INTEGER ) ? TRUE : FALSE;
+	int displayLength = displayHeaderLength, prevCh = -1, lastCh, i;
 
 	memset( printable, 0, 9 );
 
@@ -1528,6 +1582,7 @@ static void dumpHex( FILE *inFile, long length, int level,
 			complainEOF( level, length - i );
 			return;
 			}
+		lastCh = ch;
 		printString( level, "%s%02X", ( i % lineLength ) ? " " : "", ch );
 		printable[ i % 8 ] = ( ch >= ' ' && ch < 127 ) ? ch : '.';
 		fPos++;
@@ -1587,6 +1642,7 @@ static void dumpHex( FILE *inFile, long length, int level,
 					complainEOF( level, length - i );
 					return;
 					}
+				lastCh = ch;
 				}
 			}
 		else
@@ -1594,12 +1650,33 @@ static void dumpHex( FILE *inFile, long length, int level,
 		}
 	printString( level, "%c", '\n' );
 
-	if( isInteger )
+	if( option == DUMPHEX_INTEGER )
 		{
 		if( warnPadding )
 			complainInt( intBuffer, level );
 		if( warnNegative )
 			complain( "Integer is encoded as a negative value", 0, level );
+		}
+	if( option == DUMPHEX_BITSTRING )
+		{
+		/* We have to be a bit careful here with BIT STRING holes which are 
+		   encoded as if they were OCTET STRING holes and therefore don't 
+		   obey the BIT STRING DER encoding rules.  To deal with this we 
+		   assume that anything over 4 bytes/32 bits and with an unused bit
+		   count of zero is a hole encoding */
+		if( ( length <= 4 || param != 0 ) && \
+			!( lastCh & ( 1 << param ) ) )
+			{
+			/* The last valid bit should be a one bit */
+			complain( "Spurious zero bits in bitstring", 0, level );
+			}
+		if( ( ( 0xFF >> ( 8 - param ) ) & lastCh ) )
+			{
+			/* There shouldn't be any bits set after the last valid one.  We
+			   have to do the noBits check to avoid a fencepost error when
+			   there's exactly 32 bits */
+			complain( "Spurious one bits in bitstring", 0, level );
+			}
 		}
 	}
 
@@ -1725,9 +1802,9 @@ static int oidToString( char *textOID, int *textOIDlength,
 				length = sprintf( textOID, "%ld %ld", x, y );
 
 				/* A totally stupid ITU facility lets people register UUIDs
-				   as OIDs (see http://www.itu.int/ITU-T/asn1/uuid.html), if
-				   we find one of these, which live under the arc '2 25' =
-				   0x69 we have to continue decoding the OID as a UUID
+				   as OIDs (see https://www.itu.int/ITU-T/asn1/uuid.html), 
+				   if we find one of these, which live under the arc '2 25' 
+				   = 0x69 we have to continue decoding the OID as a UUID
 				   instead of a standard OID */
 				if( data == 0x69 )
 					isUUID = TRUE;
@@ -1819,7 +1896,23 @@ static void dumpBitString( FILE *inFile, const int length, const int unused,
 			}
 		}
 	else
+		{
 		value = bitString;
+		if( !( bitString & ( 1 << unused ) ) && errorStr == NULL )
+			{
+			/* The last valid bit should be a one bit */
+			errorStr = "Spurious zero bits in bitstring";
+			}
+		if( noBits < sizeof( int ) && \
+			( ( 0xFF >> ( 8 - unused ) ) & value ) && \
+			errorStr != NULL )
+			{
+			/* There shouldn't be any bits set after the last valid one.  We
+			   have to do the noBits check to avoid a fencepost error when
+			   there's exactly 32 bits */
+			errorStr = "Spurious one bits in bitstring";
+			}
+		}
 
 	/* Now that it's in the right order, dump it.  If there's only one bit
 	   set (which is often the case for bit flags) we also print the bit
@@ -1869,6 +1962,7 @@ static void displayString( FILE *inFile, long length, int level,
 	int lineLength = 48, i;
 	int firstTime = TRUE, doTimeStr = FALSE, warnIA5 = FALSE;
 	int warnPrintable = FALSE, warnTime = FALSE, warnBMP = FALSE;
+	int warnTimeT = FALSE, warnTimeCrazy = FALSE, warnTimeCrazyAlt = FALSE;
 
 	if( noBytes > 384 && !printAllData )
 		noBytes = 384;	/* Only output a maximum of 384 bytes */
@@ -1909,6 +2003,8 @@ static void displayString( FILE *inFile, long length, int level,
 #if defined( __WIN32__ ) || defined( __UNIX__ ) || defined( __OS390__ )
 		if( strOption == STR_BMP )
 			{
+			wchar_t wChBuf[ 2 ];
+
 			if( i == noBytes - 1 && ( noBytes & 1 ) )
 				{
 				/* Odd-length BMP string, complain */
@@ -1916,9 +2012,9 @@ static void displayString( FILE *inFile, long length, int level,
 				}
 			else
 				{
-				const wchar_t wCh = ( ch << 8 ) | getc( inFile );
-
-				if( displayUnicode( wCh, level ) )
+				wChBuf[ 0 ] = ( ch << 8 ) | getc( inFile );
+				wChBuf[ 1 ] = 0;
+				if( displayUnicode( wChBuf, level ) )
 					{
 					lineLength++;
 					i++;	/* We've read two characters for a wchar_t */
@@ -1928,19 +2024,19 @@ static void displayString( FILE *inFile, long length, int level,
 
 				/* The value can't be displayed as Unicode, fall back to
 				   displaying it as normal text */
-				ungetc( wCh & 0xFF, inFile );
+				ungetc( wChBuf[ 0 ] & 0xFF, inFile );
 				}
 			}
 		if( strOption == STR_UTF8 && ( ch & 0x80 ) )
 			{
+			wchar_t wChBuf[ 2 ];
 			const int secondCh = getc( inFile );
-			wchar_t wCh;
 
 			/* It's a multibyte UTF8 character, read it as a widechar */
 			if( ( ch & 0xE0 ) == 0xC0 )		/* 111xxxxx -> 110xxxxx */
 				{
 				/* 2-byte character in the range 0x80...0x7FF */
-				wCh = ( ( ch & 0x1F ) << 6 ) | ( secondCh & 0x3F );
+				wChBuf[ 0 ] = ( ( ch & 0x1F ) << 6 ) | ( secondCh & 0x3F );
 				i++;		/* We've read 2 characters */
 				fPos += 2;
 				}
@@ -1951,17 +2047,20 @@ static void displayString( FILE *inFile, long length, int level,
 					const int thirdCh = getc( inFile );
 
 					/* 3-byte character in the range 0x800...0xFFFF */
-					wCh = ( ( ch & 0x1F ) << 12 ) | \
-						  ( ( secondCh & 0x3F ) << 6 ) | \
-						  ( thirdCh & 0x3F );
+					wChBuf[ 0 ] = ( ( ch & 0x1F ) << 12 ) | \
+								  ( ( secondCh & 0x3F ) << 6 ) | \
+									( thirdCh & 0x3F );
 					}
 				else
-					wCh = '.';
+					{
+					wChBuf[ 0 ] = '.';
+					}
 				i += 2;		/* We've read 3 characters */
 				fPos += 3;
 				}
-			if( !displayUnicode( wCh, level ) )
-				printString( level, "%c", '.' );
+			wChBuf[ 1 ] = 0;
+			if( !displayUnicode( wChBuf, level ) )
+				printString( level, "%lc", wChBuf );
 			lineLength++;
 			continue;
 			}
@@ -2071,12 +2170,36 @@ static void displayString( FILE *inFile, long length, int level,
 						 timeStrPtr[ 2 ], timeStrPtr[ 3 ] );
 			if( strOption == STR_UTCTIME )
 				{
+				/* No centuries, timeStrPtr = timeStr */
 				printString( level, "%s",
 							 ( timeStr[ 0 ] < '5' ) ? "20" : "19" );
+				if( ( timeStrPtr[ 0 ] == '3' && timeStrPtr[ 1 ] >= '8' ) || \
+					( timeStrPtr[ 0 ] == '4' ) )
+					{
+					/* UTCTimes starting with '0' - '4' are 20xx, '5'-'9'  
+					   are 19xx */
+					warnTimeT = TRUE;
+					}
 				}
 			else
 				{
+				/* Centuries, timeStrPtr = timeStr + 2 */
 				printString( level, "%c%c", timeStr[ 0 ], timeStr[ 1 ] );
+				if( ( timeStrPtr[ 0 ] == '3' && timeStrPtr[ 1 ] >= '8' ) || \
+					( timeStrPtr[ 0 ] >= '4' ) )
+					{
+					/* GeneralizedTimes include centuries so anything past 
+					   '38' will be 20xx */
+					warnTimeT = TRUE;
+					}
+				if( timeStr[ 0 ] == '2' && timeStr[ 1 ] >= '1' )
+					{
+					/* There actually are certificates like this out 
+					   there... */
+					warnTimeT = warnTimeCrazy = TRUE;
+					}
+				if( timeStrPtr[ 0 ] >= '7' )
+					warnTimeCrazy = warnTimeCrazyAlt = TRUE;
 				}
 			printString( level, "%c%c %c%c:%c%c:%c%c GMT",
 						 timeStrPtr[ 0 ], timeStrPtr[ 1 ], timeStrPtr[ 6 ],
@@ -2095,6 +2218,15 @@ static void displayString( FILE *inFile, long length, int level,
 		complain( "IA5String contains illegal character(s)", 0, level );
 	if( warnTime )
 		complain( "Time is encoded incorrectly", 0, level );
+	if( warnTimeT )
+		warn( "Time value cannot be represented in a 32-bit time_t", 0, level );
+	if( warnTimeCrazy )
+		{
+		complain( warnTimeCrazyAlt ? \
+				  "Time value is either more than twenty years in the past or "
+						"more than half a century in the future" : \
+				  "Time value is more than half a century in the future", 0, level );
+		}
 	if( warnBMP )
 		complain( "BMPString has missing final byte/half character", 0, level );
 	}
@@ -2115,9 +2247,10 @@ static int getItem( FILE *inFile, ASN1_ITEM *item )
 
 	memset( item, 0, sizeof( ASN1_ITEM ) );
 	item->indefinite = FALSE;
-	tag = item->header[ index++ ] = fgetc( inFile );
+	tag = fgetc( inFile );
 	if( tag == EOF )
 		return( FALSE );
+	item->header[ index++ ] = tag;
 	fPos++;
 	item->id = tag & ~TAG_MASK;
 	tag &= TAG_MASK;
@@ -2560,6 +2693,7 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 	const int nonOutlineObject = \
 			( doOutlineOnly && ( item->id & FORM_MASK ) != CONSTRUCTED ) ? \
 			TRUE : FALSE;
+	int ch;
 
 	if( ( item->id & CLASS_MASK ) != UNIVERSAL )
 		{
@@ -2611,7 +2745,7 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 		   without displaying it) */
 		if( nonOutlineObject )
 			{
-			dumpHex( inFile, item->length, 1000, FALSE );
+			dumpHex( inFile, item->length, 1000, DUMPHEX_NORMAL, 0 );
 			if( item->nonCanonical )
 				complainLengthCanonical( item, level );
 			printString( level, "%c", '\n' );
@@ -2631,7 +2765,7 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 			}
 
 		/* This could be anything, dump it as hex data */
-		dumpHex( inFile, item->length, level, FALSE );
+		dumpHex( inFile, item->length, level, DUMPHEX_NORMAL, 0 );
 		if( item->nonCanonical )
 			complainLengthCanonical( item, level );
 
@@ -2684,9 +2818,6 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 	switch( item->tag )
 		{
 		case BOOLEAN:
-			{
-			int ch;
-
 			if( item->length != 1 )
 				complainLength( item, level );
 			ch = getc( inFile );
@@ -2705,13 +2836,12 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 				complainLengthCanonical( item, level );
 			fPos++;
 			break;
-			}
 
 		case INTEGER:
 		case ENUMERATED:
 			if( item->length > 4 )
 				{
-				dumpHex( inFile, item->length, level, TRUE );
+				dumpHex( inFile, item->length, level, DUMPHEX_INTEGER, 0 );
 				if( item->nonCanonical )
 					complainLengthCanonical( item, level );
 				}
@@ -2724,11 +2854,12 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 			break;
 
 		case BITSTRING:
-			{
-			int ch;
-
-			if( item->length < 2 )
+			if( item->length < 1 )
+				{
+				/* A bitstring always has to contain at least one byte, the unused-bits 
+				   count */
 				complainLength( item, level );
+				}
 			if( ( ch = getc( inFile ) ) != 0 )
 				{
 				if( ch == EOF )
@@ -2738,12 +2869,18 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 					}
 				printString( level, " %d unused bit%s",
 							 ch, ( ch != 1 ) ? "s" : "" );
+				if( item->length <= 1 )
+					{
+					complain( "Empty BIT STRING has non-zero unused-bits "
+							  "value", 0, level );
+					return;
+					}
 				}
+			item->length--;
 			fPos++;
-			if( !--item->length && !ch )
+			if( item->length <= 0 )
 				{
-				printString( level, "%c", '\n' );
-				complain( "Object has zero length", 0, level );
+				printString( level, " %s\n", "(no bits set)" );
 				if( item->nonCanonical )
 					complainLengthCanonical( item, level );
 				return;
@@ -2758,7 +2895,6 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 				break;
 				}
 			/* Fall through to dump it as an octet string */
-			}
 
 		case OCTETSTRING:
 			if( checkEncapsulate( inFile, item->length ) )
@@ -2785,7 +2921,10 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 					complainLengthCanonical( item, level );
 				return;
 				}
-			dumpHex( inFile, item->length, level, FALSE );
+			if( item->tag == BITSTRING )
+				dumpHex( inFile, item->length, level, DUMPHEX_BITSTRING, ch );
+			else
+				dumpHex( inFile, item->length, level, DUMPHEX_NORMAL, 0 );
 			if( item->nonCanonical )
 				complainLengthCanonical( item, level );
 			break;
@@ -2951,7 +3090,7 @@ static void printASN1object( FILE *inFile, ASN1_ITEM *item, int level )
 			doIndent( level + 1 );
 			printString( level, "%s",
 						 "Unrecognised primitive, hex value is:");
-			dumpHex( inFile, item->length, level, FALSE );
+			dumpHex( inFile, item->length, level, DUMPHEX_NORMAL, 0 );
 			if( item->nonCanonical )
 				complainLengthCanonical( item, level );
 			noErrors++;		/* Treat it as an error */
@@ -2992,13 +3131,27 @@ static long processObjectStart( FILE *inFile, const ASN1_ITEM *item )
 
 	/* If the input isn't seekable, turn off some options that require the
 	   use of fseek().  This check isn't perfect (some streams are slightly
-	   seekable due to buffering) but it's better than nothing */
+	   seekable due to buffering) but it's better than nothing.
+	   
+	   This is complicated by a problem under Windows for which running 
+	   things in pipe mode is pretty erratic, in particular using fseek()
+	   below results in all subsequent reads returning EOF.  To try and
+	   ameliorate this we first try other checks to see if we're using 
+	   stdin before trying the fseek() check */
+#ifdef __WIN32__
+	if( useStdin || inFile == stdin || \
+		fseek( inFile, -item->headerSize, SEEK_CUR ) )
+#else
 	if( fseek( inFile, -item->headerSize, SEEK_CUR ) )
+#endif /* __WIN32__ */
 		{
 		useStdin = TRUE;
 		checkEncaps = FALSE;
-		puts( "Warning: Input is non-seekable, some functionality has been "
-			  "disabled." );
+		if( !noWarnStdin )
+			{
+			puts( "Warning: Input is non-seekable, some functionality has "
+				  "been disabled." );
+			}
 
 		return( length );
 		}
@@ -3202,12 +3355,13 @@ static int printAsn1( FILE *inFile, const int level, long length,
 static void usageExit( void )
 	{
 	puts( "DumpASN1 - ASN.1 object dump/syntax check program." );
-	puts( "Copyright Peter Gutmann 1997 - 2016.  Last updated " UPDATE_STRING "." );
+	puts( "Copyright Peter Gutmann 1997 - " UPDATE_YEAR ".  Last updated " UPDATE_STRING "." );
 	puts( "" );
 
-	puts( "Usage: dumpasn1 [-acdefghilmoprstuvwxz] <file>" );
+	puts( "Usage: dumpasn1 [-acdefghilmopqrstuvwxz] <file>" );
 	puts( "  Input options:" );
-	puts( "       - = Take input from stdin (some options may not work properly)" );
+	puts( "       - = Take input from stdin (some display options will be disabled)" );
+	puts( "       -q = Disable warning about stdin use affecting display options" );
 	puts( "       -<number> = Start <number> bytes into the file" );
 	puts( "       -- = End of arg list" );
 	puts( "       -c<file> = Read Object Identifier info from alternate config file" );
@@ -3372,6 +3526,10 @@ int main( int argc, char *argv[] )
 					doPure = TRUE;
 					break;
 
+				case 'Q':
+					noWarnStdin = TRUE;
+					break;
+
 				case 'R':
 					reverseBitString = !reverseBitString;
 					break;
@@ -3448,7 +3606,7 @@ int main( int argc, char *argv[] )
 	   dups during the read because (a) the linear search would make the
 	   process n^2, (b) during the dump process the search will terminate on
 	   the first match so dups aren't that serious, and (c) there should be
-	   very few dups present */
+	   very few if any dups present */
 	if( argc != 1 && !useStdin )
 		usageExit();
 	if( !readGlobalConfig( pathPtr ) )
@@ -3528,9 +3686,8 @@ int main( int argc, char *argv[] )
 		( void ) fread( buffer, 1, 8, inFile );		/* Skip 4 EOCs */
 		if( !feof( inFile ) )
 			{
-			fprintf( output, "Warning: Further data follows ASN.1 data at "
-					 "position %ld.\n", position );
-			noWarnings++;
+			warn( "Further data follows ASN.1 data at position %ld.\n", 
+				  position, 0 );
 			}
 		}
 	fclose( inFile );
@@ -3549,3 +3706,4 @@ int main( int argc, char *argv[] )
 
 	return( ( noErrors ) ? noErrors : EXIT_SUCCESS );
 	}
+
